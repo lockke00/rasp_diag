@@ -1,176 +1,192 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-# ------------------------------------------------------------
-# raspberry_diagnostic.sh
-#
-#   Collects the most useful diagnostic information from a Raspberry‑Pi.
-#   The data is stored in a compressed tar archive that contains:
-#       * System & kernel details
-#       * CPU / memory / storage stats
-#       * Network configuration & status
-#       * Running services, logs and boot messages
-#       * Configuration files that are likely to be relevant
-#
-#   Usage:  sudo ./raspberry_diagnostic.sh [output_dir]
-#
-#   Requires: tar, gzip, systemctl, journalctl (systemd), lsb_release
-# ------------------------------------------------------------
+# Raspberry Pi Diagnostic Information Script
+# Collects system diagnostics and saves to a file
 
-set -euo pipefail
+# Output file with timestamp
+OUTPUT_FILE="rpi_diagnostics_$(date +%Y%m%d_%H%M%S).txt"
 
-# ------------------------------------------------------------------
-# Helper functions
-# ------------------------------------------------------------------
-
-timestamp() {
-    date '+%Y-%m-%d_%H-%M-%S'
+# Function to print section headers
+print_header() {
+    echo "========================================" >> "$OUTPUT_FILE"
+    echo "$1" >> "$OUTPUT_FILE"
+    echo "========================================" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
 }
 
-log() {
-    echo "[$(timestamp)] $*"
-}
+# Start diagnostic collection
+echo "Raspberry Pi Diagnostic Report" > "$OUTPUT_FILE"
+echo "Generated: $(date)" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
 
-die() {
-    log "$1" >&2
-    exit 1
-}
+# System Information
+print_header "SYSTEM INFORMATION"
+uname -a >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
 
-# ------------------------------------------------------------------
-# Configuration
-# ------------------------------------------------------------------
-
-# Where to put the resulting archive (default: current dir)
-OUTDIR=${1:-$(pwd)}
-
-# Temporary working directory
-WORKDIR=$(mktemp -d)
-
-cleanup() {
-    rm -rf "$WORKDIR"
-}
-trap cleanup EXIT
-
-# ------------------------------------------------------------------
-# 1. Basic system information
-# ------------------------------------------------------------------
-
-log "Collecting basic system info..."
-cat <<EOF >"$WORKDIR/basic-info.txt"
-Hostname: $(hostname)
-OS:          $(lsb_release -ds 2>/dev/null || echo "Unknown")
-Kernel:      $(uname -srmpv)
-Uptime:      $(uptime -p)
-CPU model:   $(grep -m1 'model name' /proc/cpuinfo | cut -d':' -f2- | tr -s ' ')
-CPU cores:   $(nproc)
-Arch:        $(uname -m)
-EOF
-
-# ------------------------------------------------------------------
-# 2. CPU, memory & storage
-# ------------------------------------------------------------------
-
-log "Collecting CPU/memory/storage stats..."
-cat <<EOF >"$WORKDIR/system-stats.txt"
-=== CPU ==========================================================
-$(lscpu)
-
-=== Memory =========================================================
-$(free -h)
-
-=== Storage =======================================================
-$(lsblk -o NAME,SIZE,MOUNTPOINT,TYPE,FSTYPE -a)
-EOF
-
-# ------------------------------------------------------------------
-# 3. Disk usage & file system health
-# ------------------------------------------------------------------
-
-log "Collecting disk usage and health..."
-df -h >"$WORKDIR/df.txt"
-du -sh /home/* >"$WORKDIR/home-usage.txt"
-
-# If smartctl is available, show SMART data for each block device
-if command -v smartctl >/dev/null 2>&1; then
-    log "Collecting SMART data..."
-    for dev in $(lsblk -dn -o NAME | grep 'mmcblk\|sd'); do
-        echo "=== SMART data: /dev/$dev ===" >>"$WORKDIR/smart.txt"
-        smartctl -a "/dev/$dev" 2>/dev/null || echo "No SMART support on /dev/$dev"
-    done
+# Raspberry Pi Model
+print_header "RASPBERRY PI MODEL"
+if [ -f /proc/device-tree/model ]; then
+    cat /proc/device-tree/model >> "$OUTPUT_FILE" 2>&1
+    echo "" >> "$OUTPUT_FILE"
 fi
+cat /proc/cpuinfo | grep -E "Model|Hardware|Revision|Serial" >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
 
-# ------------------------------------------------------------------
-# 4. Network configuration & status
-# ------------------------------------------------------------------
-
-log "Collecting network info..."
-{
-    echo "=== ifconfig ==="
-    ifconfig -a
-    echo
-    echo "=== ip addr ==="
-    ip address show
-    echo
-    echo "=== Routing tables ==="
-    ip route show
-    echo
-    echo "=== DNS resolvers ==="
-    cat /etc/resolv.conf
-} >"$WORKDIR/network.txt"
-
-# Show current connections (requires ss)
-if command -v ss >/dev/null 2>&1; then
-    ss -tulnp >"$WORKDIR/ss.txt"
+# OS Version
+print_header "OPERATING SYSTEM"
+if [ -f /etc/os-release ]; then
+    cat /etc/os-release >> "$OUTPUT_FILE" 2>&1
 fi
+echo "" >> "$OUTPUT_FILE"
 
-# ------------------------------------------------------------------
-# 5. Running services & processes
-# ------------------------------------------------------------------
+# Kernel Version
+print_header "KERNEL VERSION"
+uname -r >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
 
-log "Collecting service and process information..."
-systemctl list-units --type=service --state=running >"$WORKDIR/running-services.txt"
-ps auxf >"$WORKDIR/processes.txt"
+# CPU Information
+print_header "CPU INFORMATION"
+lscpu >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+echo "CPU Frequency:" >> "$OUTPUT_FILE"
+if command -v vcgencmd &> /dev/null; then
+    vcgencmd measure_clock arm >> "$OUTPUT_FILE" 2>&1
+fi
+echo "" >> "$OUTPUT_FILE"
 
-# ------------------------------------------------------------------
-# 6. Boot logs (journalctl) – if systemd is used
-# ------------------------------------------------------------------
+# Temperature
+print_header "TEMPERATURE"
+if command -v vcgencmd &> /dev/null; then
+    echo "CPU Temperature:" >> "$OUTPUT_FILE"
+    vcgencmd measure_temp >> "$OUTPUT_FILE" 2>&1
+fi
+if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
+    echo "Thermal Zone: $(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))°C" >> "$OUTPUT_FILE" 2>&1
+fi
+echo "" >> "$OUTPUT_FILE"
 
-log "Collecting boot and recent journal logs..."
-if command -v journalctl >/dev/null 2>&1; then
-    journalctl -b --no-pager >"$WORKDIR/journal.txt"
+# Memory Information
+print_header "MEMORY INFORMATION"
+free -h >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+if command -v vcgencmd &> /dev/null; then
+    echo "GPU Memory:" >> "$OUTPUT_FILE"
+    vcgencmd get_mem arm >> "$OUTPUT_FILE" 2>&1
+    vcgencmd get_mem gpu >> "$OUTPUT_FILE" 2>&1
+fi
+echo "" >> "$OUTPUT_FILE"
+
+# Disk Usage
+print_header "DISK USAGE"
+df -h >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+
+# SD Card Information
+print_header "SD CARD INFORMATION"
+if [ -b /dev/mmcblk0 ]; then
+    echo "SD Card Device: /dev/mmcblk0" >> "$OUTPUT_FILE"
+    sudo fdisk -l /dev/mmcblk0 >> "$OUTPUT_FILE" 2>&1
+fi
+echo "" >> "$OUTPUT_FILE"
+
+# Uptime
+print_header "UPTIME"
+uptime >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+
+# Load Average
+print_header "LOAD AVERAGE"
+cat /proc/loadavg >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+
+# Running Processes
+print_header "TOP PROCESSES (by CPU)"
+ps aux --sort=-%cpu | head -11 >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+
+print_header "TOP PROCESSES (by Memory)"
+ps aux --sort=-%mem | head -11 >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+
+# Network Information
+print_header "NETWORK INTERFACES"
+ip addr show >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+
+print_header "NETWORK CONNECTIONS"
+ss -tuln >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+
+# USB Devices
+print_header "USB DEVICES"
+lsusb >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
+
+# GPIO Status (if available)
+print_header "GPIO STATUS"
+if command -v gpio &> /dev/null; then
+    gpio readall >> "$OUTPUT_FILE" 2>&1
 else
-    echo "systemd journal not available." >"$WORKDIR/journal.txt"
+    echo "gpio command not available (install wiringpi)" >> "$OUTPUT_FILE"
 fi
+echo "" >> "$OUTPUT_FILE"
 
-# ------------------------------------------------------------------
-# 7. System configuration files that are often useful
-# ------------------------------------------------------------------
+# Voltage and Power
+print_header "VOLTAGE AND POWER"
+if command -v vcgencmd &> /dev/null; then
+    echo "Core Voltage:" >> "$OUTPUT_FILE"
+    vcgencmd measure_volts core >> "$OUTPUT_FILE" 2>&1
+    echo "" >> "$OUTPUT_FILE"
+    echo "Throttling Status:" >> "$OUTPUT_FILE"
+    vcgencmd get_throttled >> "$OUTPUT_FILE" 2>&1
+fi
+echo "" >> "$OUTPUT_FILE"
 
-log "Collecting selected config files..."
-mkdir -p "$WORKDIR/configs"
+# Boot Configuration
+print_header "BOOT CONFIGURATION"
+if [ -f /boot/config.txt ]; then
+    grep -v "^#\|^$" /boot/config.txt >> "$OUTPUT_FILE" 2>&1
+elif [ -f /boot/firmware/config.txt ]; then
+    grep -v "^#\|^$" /boot/firmware/config.txt >> "$OUTPUT_FILE" 2>&1
+fi
+echo "" >> "$OUTPUT_FILE"
 
-cp /etc/hostname "$WORKDIR/configs/"
-cp /etc/hosts "$WORKDIR/configs/"
-cp /etc/resolv.conf "$WORKDIR/configs/"
-cp /etc/network/interfaces "$WORKDIR/configs/" 2>/dev/null
-cp /etc/dhcpcd.conf "$WORKDIR/configs/" 2>/dev/null
-cp -r /boot/* "$WORKDIR/boot-configs/" 2>/dev/null
+# I2C Devices
+print_header "I2C DEVICES"
+if command -v i2cdetect &> /dev/null; then
+    for i in 0 1; do
+        echo "Bus $i:" >> "$OUTPUT_FILE"
+        sudo i2cdetect -y $i >> "$OUTPUT_FILE" 2>&1
+        echo "" >> "$OUTPUT_FILE"
+    done
+else
+    echo "i2c-tools not installed" >> "$OUTPUT_FILE"
+fi
+echo "" >> "$OUTPUT_FILE"
 
-# ------------------------------------------------------------------
-# 8. Optional: Capture the current environment of installed packages
-# ------------------------------------------------------------------
+# System Logs (last 50 lines)
+print_header "RECENT SYSTEM LOGS"
+sudo journalctl -n 50 --no-pager >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
 
-log "Collecting package list..."
-dpkg --get-selections >"$WORKDIR/packages.txt"
+# dmesg errors
+print_header "KERNEL ERRORS (dmesg)"
+sudo dmesg | grep -i "error\|warning\|fail" | tail -20 >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
 
-# ------------------------------------------------------------------
-# 9. Create archive
-# ------------------------------------------------------------------
+# Installed Packages (Raspberry Pi specific)
+print_header "RASPBERRY PI PACKAGES"
+dpkg -l | grep -i "raspberrypi\|raspi" >> "$OUTPUT_FILE" 2>&1
+echo "" >> "$OUTPUT_FILE"
 
-OUTFILE="$OUTDIR/raspberry-diagnostics-$(timestamp).tar.gz"
-log "Creating archive $OUTFILE ..."
-tar -czf "$OUTFILE" -C "$WORKDIR" .
+# Summary
+print_header "DIAGNOSTIC COLLECTION COMPLETE"
+echo "Report saved to: $OUTPUT_FILE" >> "$OUTPUT_FILE"
+echo "Generated: $(date)" >> "$OUTPUT_FILE"
 
-log "Diagnostic data collected successfully."
-log "Archive location: $(realpath "$OUTFILE")"
-
-exit 0
+# Print completion message
+echo "Diagnostic information collected successfully!"
+echo "Output saved to: $OUTPUT_FILE"
+echo ""
+echo "File size: $(du -h "$OUTPUT_FILE" | cut -f1)"
