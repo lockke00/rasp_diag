@@ -2,7 +2,7 @@
 
 1. **Copy the script**  
    ```bash
-   wget https://example.com/raspberry_diagnostic.sh
+   wget https://github.com/lockke00/rasp_diag/blob/main/raspberry_diagnostic.sh
    chmod +x raspberry_diagnostic.sh
    ```
 
